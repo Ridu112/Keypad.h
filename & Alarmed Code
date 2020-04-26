@@ -1,0 +1,146 @@
+//For detecting objects it uses an ultrasonic sensor, and once the alarm detect something a buzzerPin starts emitting a sound.  
+//In order to stop the alarm we need to insert a 4 digits password. The preset password is 5454 but we also have the possibility to change it. ​
+//On the other hand we are inserting Green Light Optical Fingerprint Reader Sensor Module for Arduino that will work same way as keypad the only different will be Fingerprint Reader.​
+
+//include libraries
+#include <Servo.h>                                    
+#include <Keypad.h>
+#include <LiquidCrystal_I2C.h>
+#include <stdio.h>
+#include <string.h>
+
+//define arduino pins
+#define buzzerPin 10
+#define trigPin 12
+#define echoPin 11
+#define ledredPin 14  //pin A0
+#define ledgreenPin 13
+#define IN1 16        //pin A2
+#define IN2 17        //pin A3
+
+//initialize variables
+int angle = 10;                                                   //variable to determine the angle of servo
+double duration;                                                  //time duraction for echo to receive signal response
+double dist;                                                      //variable to calculate distance
+int initDist, currDist;                                           //variable to calculate state of sensor                                 
+int msg = 0;                                                      //monitor what is displayed on home screen
+String password = "5454";                                         //initial password
+String temp_Pass;                                                 //store user desired new password
+boolean activated, activateAlarm, alarmActivated = false;         //monitor state of alarm                                                  
+boolean enterPassword;                                            //monitor state of password
+boolean passwordSet, passwordCurr = false;
+const byte rows = 4;                                              //four rows
+const byte cols = 4;                                              //four columns
+char keypressed;                                                  //store the key pressed
+
+char myKeys[rows][cols] = {                                       //define the sequence of the buttons on the keypads
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[rows] = {9, 8, 7, 6};                                //connect to the row pinouts of the keypad
+byte colPins[cols] = {5, 4, 3, 2};                                //connect to the column pinouts of the keypad
+
+//initialize an instance of class NewKeypad
+Keypad myKeyboard = Keypad( makeKeymap(myKeys), rowPins, colPins, rows, cols); 
+LiquidCrystal_I2C screendisplay(0x27,20,4);  // set the screendisplay address to 0x27 for a 16 chars and 2 line display
+Servo servo;                                                      //define an instance of the servo
+
+
+void setup() {
+  servo.attach(15);                                               //define servo pin A1                                                                                     
+  servo.write(angle);                                             //execute servo initial angle
+
+  //define Pin state
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(buzzerPin, OUTPUT); 
+  pinMode(trigPin, OUTPUT); 
+  pinMode(echoPin, INPUT); 
+  pinMode(ledgreenPin, OUTPUT);
+  pinMode(ledredPin, OUTPUT);
+
+  //initialize lcd as 16 cols and 2 rows
+  screendisplay.begin(16, 2);
+  screendisplay.init();
+  screendisplay.backlight();
+}
+void loop() {
+  if (activateAlarm) {
+    //calculate init distance
+    initDist = getDist();
+    //diaplay prompt when user choices to activate alarm
+    screendisplay.clear();
+    screendisplay.setCursor(0, 0);
+    screendisplay.print("Alarm activated");
+    screendisplay.setCursor(0, 1);
+    screendisplay.print("in");
+
+    int countdown = 010; // 10 seconds count down before activating the alarm
+    for(int i = countdown; i >= 0; i--) {
+      screendisplay.setCursor(7, 1);
+      screendisplay.print(i);
+      tone(buzzerPin, 500, 100);                    //brief sound for countdown
+      delay(1200);    //about a second
+    }
+    
+    //display prompt notify the user that alarm has been 
+    screendisplay.clear();
+    screendisplay.setCursor(0, 0);
+    screendisplay.print("Alarm Activated!");
+    delay(2000);
+
+    //prompt to lock the door and close the door and lock it
+    screendisplay.clear();
+    screendisplay.print("   Door Lock!");
+    CloseDoor();
+    delay(4000);
+    screendisplay.clear();
+    
+    //set state variables
+    activateAlarm = false;
+    alarmActivated = true;
+
+    //keep screen cleared until user is detected
+    currDist = getDist() + 10;
+    while(currDist >= initDist){
+      screendisplay.clear();
+      currDist = getDist() + 10;
+      }
+  }
+
+
+  //if alarm is activated and user is detected, request password entry
+  if (alarmActivated == true) {
+    currDist = getDist() + 10;
+    if ( currDist < initDist) {
+      screendisplay.clear();
+      enterPass();
+    }
+  }
+
+
+//if alarm is not activated, display home screen menu option and execute user choice
+  if (!alarmActivated) {
+    if (msg == 0 ) {
+      screendisplay.clear();
+      screendisplay.setCursor(0, 0);
+      screendisplay.print("A - Activate");
+      screendisplay.setCursor(0, 1);
+      screendisplay.print("C - Change Pass");
+      msg = 1;              //indicate home screen option has been displayed
+    }
+
+    //collect user choice, if A; activate alarm else if C; change password
+    keypressed = myKeyboard.getKey();
+    if (keypressed == 'A') {      
+      tone(buzzerPin, 1000, 200);
+      activateAlarm = true;
+    }
+    else if (keypressed == 'C') {
+      tone(buzzerPin, 1000, 200);
+      changepassword();
+      }
+    }
+  }
