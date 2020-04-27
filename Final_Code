@@ -1,0 +1,480 @@
+//This is CIS 122-02 Data Structures project Group Two by Ridwan Ali
+
+//           Main Project Operating​:
+//In this project we will make an Arduino Security and Alarm System. 
+//The alarm activates in 10 seconds after pressing a button. 
+//For detecting objects it uses an ultrasonic sensor, and once the alarm detect something a buzzerPin starts emitting a sound.  
+//In order to stop the alarm we need to insert a 4 digits password. The preset password is 5454 but we also have the possibility to change it. ​
+//On the other hand we are inserting Green Light Optical Fingerprint Reader Sensor Module for Arduino that will work same way as keypad the only different will be Fingerprint Reader.​
+
+//include libraries
+#include <Adafruit_Fingerprint.h>
+#include <SoftwareSerial.h>
+#include <Servo.h>                                    
+#include <Keypad.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include <stdio.h>
+#include <string.h>
+
+//define arduino pins
+#define buzzerPin 10
+#define trigPin 12
+#define echoPin 11
+#define ledredPin 14  //pin A0
+#define ledgreenPin 15
+#define WIRE2 16        //pin A2
+
+//initialize variables
+int angle = 180;                                                   //variable to determine the angle of servo
+double duration;                                                  //time duraction for echo to receive signal response
+double dist;                                                      //variable to calculate distance
+int initDist, currDist;                                           //variable to calculate state of sensor                                 
+int msg = 0;                                                      //monitor what is displayed on home screen
+String password = "5454";                                         //initial password
+String password_default = "1111";
+String temp_Pass;                                                 //store user desired new password
+boolean activated, activateAlarm, alarmActivated = false;         //monitor state of alarm                                                  
+boolean enterPassword;                                            //monitor state of password
+boolean passwordSet, passwordCurr = false;
+const byte rows = 4;                                              //four rows
+const byte cols = 4;                                              //four columns
+char keypressed;                                                  //store the key pressed
+
+char myKeys[rows][cols] = {                                       //define the sequence of the buttons on the keypads
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+byte rowPins[rows] = {9, 8, 7, 6};                                //connect to the row pinouts of the keypad
+byte colPins[cols] = {5, 4, 3, 2};                                //connect to the column pinouts of the keypad
+
+//initialize an instance of class NewKeypad
+Keypad myKeyboard = Keypad( makeKeymap(myKeys), rowPins, colPins, rows, cols); 
+LiquidCrystal_I2C screendisplay(0x27,20,4);  // set the screendisplay address to 0x27 for a 16 chars and 2 line display
+Servo servo;                                                     //define an instance of the servo
+SoftwareSerial mySerial(2, 3); // Fingerprint sensor wiring.
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial); //creating an instance Fingerprint Sensor used ADAFRUIT FINGERPRINT LIBRARY.
+
+void setup() {
+  servo.attach(13);                                               //define servo pin A1                                                                                     
+  servo.write(angle);                                            //execute servo initial angle
+
+  finger.begin(57600);                                           // Scanner Initilization
+  
+  //define Pin state
+  pinMode(WIRE2, OUTPUT);
+  pinMode(buzzerPin, OUTPUT); 
+  pinMode(trigPin, OUTPUT); 
+  pinMode(echoPin, INPUT); 
+  pinMode(ledgreenPin, OUTPUT);
+  pinMode(ledredPin, OUTPUT);
+
+  //initialize lcd as 16 cols and 2 rows
+  screendisplay.begin(16, 2);
+  screendisplay.init();
+  screendisplay.backlight();
+}
+
+void loop() {
+  if (activateAlarm) {
+    //calculate init distance
+    initDist = getDist();
+    //diaplay prompt when user choices to activate alarm
+    screendisplay.clear();
+    screendisplay.setCursor(0, 0);
+    screendisplay.print("Alarm activated");
+    screendisplay.setCursor(0, 1);
+    screendisplay.print("in");
+
+    int countdown = 010; // 10 seconds count down before activating the alarm
+    for(int i = countdown; i >= 0; i--) {
+      screendisplay.setCursor(7, 1);
+      screendisplay.print(i);
+      tone(buzzerPin, 500, 100);                    //brief sound for countdown
+      delay(1200);    //about a second
+    }
+    
+    //display prompt notify the user that alarm has been 
+    screendisplay.clear();
+    screendisplay.setCursor(0, 0);
+    screendisplay.print("Alarm Activated!");
+    delay(2000);
+
+    //prompt to lock the door and close the door and lock it
+    screendisplay.clear();
+    screendisplay.print("   Door Lock!");
+    closeDoor();
+    delay(4000);
+    screendisplay.clear();
+    
+    //set state variables
+    activateAlarm = false;
+    alarmActivated = true;
+
+    //keep screen cleared until user is detected
+    currDist = getDist() + 10;
+    while(currDist >= initDist){
+      screendisplay.clear();
+      currDist = getDist() + 10;
+      }
+  }
+
+  //if alarm is activated and user is detected, request password entry
+  if (alarmActivated == true) {
+    currDist = getDist() + 10;
+    if ( currDist < initDist) {
+      screendisplay.clear();
+      enterPass();
+      getFingerprintIDez(); //Fingerprint sensor looping
+      delay(3000); // Wait time 3sec, this controls fingerprint sensor light blinks
+    }
+  }
+
+
+//if alarm is not activated, display home screen menu option and execute user choice
+  if (!alarmActivated) {
+    if (msg == 0 ) {
+      screendisplay.clear();
+      screendisplay.setCursor(0, 0);
+      screendisplay.print("A - Activate");
+      screendisplay.setCursor(0, 1);
+      screendisplay.print("C - Change Pass");
+      msg = 1;              //indicate home screen option has been displayed
+    }
+
+    //collect user choice, if A; activate alarm else if C; change password
+    keypressed = myKeyboard.getKey();
+    if (keypressed == 'A') {      
+      tone(buzzerPin, 1000, 200);
+      activateAlarm = true;
+    }
+    else if (keypressed == 'C') {
+      tone(buzzerPin, 1000, 200);
+      changepassword();
+      }
+    }
+  }
+
+
+// This function is modified and taken from ADAFRUIT FINGERPRINT LIBRARY.
+
+int getFingerprintIDez() {
+  
+  //diaplay prompt when user choices to activate alarm
+  screendisplay.clear();
+  screendisplay.setCursor(0, 0);
+  screendisplay.print("Please Scan");
+  screendisplay.setCursor(0, 1);
+  screendisplay.print("Scan Finger");
+  delay(6000);
+  screendisplay.clear();
+  
+  uint8_t y = finger.getImage();        //Fingerprint image scan.
+  if (y != FINGERPRINT_OK)  return -1; 
+  y = finger.image2Tz();               //Fingerprint image scan conversion.
+  if (y != FINGERPRINT_OK)  return -1;
+  y = finger.fingerFastSearch();   // this checks valid finger image in the memory, if failed
+  if (y != FINGERPRINT_OK){   
+    screendisplay.clear();
+    screendisplay.setCursor(0, 0);              // if failed Access is denied
+    screendisplay.print("Access denied");       // For serial communication
+    screendisplay.setCursor(0, 1);               // LCD Print
+    screendisplay.print("Access denied");  
+    delay(2000); //Wait Time 2sec
+    screendisplay.clear();
+    screendisplay.setCursor(0, 0);              // if failed Access is denied
+    screendisplay.print("Place Finger");       // For serial communication
+    screendisplay.setCursor(0, 1);               // LCD Print
+    screendisplay.print("   Again");  
+    delay(4000);
+    return -1;
+    getFingerprintIDez();
+  }
+
+  //LCD Print, when finger image recognized
+  screendisplay.clear();
+  screendisplay.setCursor(0, 0);             
+  screendisplay.print("Access Gained");       
+  screendisplay.setCursor(0, 1);              
+  screendisplay.print("Door Unlocked");  
+  
+  OpenDoor(); // Door Unlock                        
+  delay(2000);
+  return finger.fingerID; // Loop return
+}
+
+//Function to change password
+void changepassword(){
+      int y = 10;                         //variable to monitor lcd cursor for password entry
+      temp_Pass = "";                     //initialize variable to store user new password entry 
+
+      //display prompt for current password entry
+      screendisplay.clear();
+      screendisplay.setCursor(0, 0);
+      screendisplay.print("Current Password");
+      screendisplay.setCursor(0, 1);
+      screendisplay.print("Password>");
+
+      //initialize variables to determine the state of password entry
+      passwordSet = true;
+      passwordCurr = true;
+
+      //while current password has not been entered
+      while (passwordCurr) {
+        //get user key pressed
+        keypressed = myKeyboard.getKey();
+        //if a key is pressed
+        if (keypressed != NO_KEY) {
+          //if key pressed is any of this option, add it to string temp password
+          if (keypressed == '0' || keypressed == '1' || keypressed == '2' || keypressed == '3' ||
+              keypressed == '4' || keypressed == '5' || keypressed == '6' || keypressed == '7' ||
+              keypressed == '8' || keypressed == '9' || keypressed == 'A' || keypressed == 'B' || 
+              keypressed == 'C' || keypressed == 'D' ) {
+            temp_Pass += keypressed;
+
+            //display x to indicate password entered and increment cursor
+            screendisplay.setCursor(y, 1);
+            screendisplay.print("*");
+            y++;
+            
+          }
+        }
+
+        //if entered password is more than 5character or when user enters #  
+        //reset the entry and cursor then display prompt
+        if (y > 15 || keypressed == '#') {
+          temp_Pass = "";
+          y = 10;
+          screendisplay.clear();
+          screendisplay.setCursor(0, 0);
+          screendisplay.print("Current Password");
+          screendisplay.setCursor(0, 1);
+          screendisplay.print("Password>");
+        }
+
+        //if user enter *, confirm user enter password
+        if (keypressed == '*') {
+          y = 10;                       //reset cursor for password entry
+          tone(buzzerPin, 2000, 100);
+
+          //verify user entered password is the same as previous password saved
+          if (password == temp_Pass  || temp_Pass == password_default) {
+            temp_Pass = "";               //reset entry buffer to store set password
+
+            //display prompt to display rules
+            screendisplay.clear();
+            screendisplay.setCursor(0, 0);
+            screendisplay.print("  * - Confirm");
+            screendisplay.setCursor(0, 1);
+            screendisplay.print("  # - Reset");
+            delay(4000);
+
+            screendisplay.clear();
+            screendisplay.setCursor(0, 0);
+            screendisplay.print("Least char is 1");
+            screendisplay.setCursor(0, 1);
+            screendisplay.print("Most char is 5");
+            delay(4000);
+
+            //display prompt to enter the new password
+            screendisplay.clear();
+            screendisplay.setCursor(0, 0);
+            screendisplay.print("Set New Password");
+            screendisplay.setCursor(0, 1);
+            screendisplay.print("Password>");
+
+            //while new password has not be entered
+            while (passwordSet) {
+              //get user entry
+              keypressed = myKeyboard.getKey();
+              if (keypressed != NO_KEY) {
+               //if key pressed is any of this option, add it to string temp password
+                if (keypressed == '0' || keypressed == '1' || keypressed == '2' || keypressed == '3' ||
+                    keypressed == '4' || keypressed == '5' || keypressed == '6' || keypressed == '7' ||
+                    keypressed == '8' || keypressed == '9' || keypressed == 'A' || keypressed == 'B' || 
+                    keypressed == 'C' || keypressed == 'D' ) {
+                  temp_Pass += keypressed;
+                  screendisplay.setCursor(y, 1);
+                  screendisplay.print("*");
+                  y++;
+                }
+              }
+
+               //if entered password is more than 5character or when user enters #  
+               //reset the entry and cursor then display prompt
+              if (y > 15 || keypressed == '#') {
+                temp_Pass = "";
+                y = 10;
+                tone(buzzerPin, 2000, 100);
+                screendisplay.clear();
+                screendisplay.setCursor(0, 0);
+                screendisplay.print("Set New Password");
+                screendisplay.setCursor(0, 1);
+                screendisplay.print("Password>");
+              }
+              //if user enter *, confirm user enter password
+              if (keypressed == '*') {
+                y = 10;
+                screendisplay.clear();
+                screendisplay.setCursor(0, 0);
+                screendisplay.print("  Password");
+                screendisplay.setCursor(0, 1);
+                screendisplay.print("  Changed");
+     
+                tone(buzzerPin, 2000, 100);
+
+                //save new password by replacing previous password
+                password = temp_Pass;
+                //change state to false to exit loops that newpassword has been set
+                passwordSet = false;
+                passwordCurr = false;
+                msg = 0;
+                noTone(buzzerPin);
+              }
+            }
+          }     //if entered password doesn't match saved password,display prompt and reset the entry     
+                else{
+                tone(buzzerPin, 3000); //output 
+                screendisplay.clear();
+                screendisplay.setCursor(0, 0); 
+                screendisplay.print("   INCORRECT!");
+                screendisplay.setCursor(0, 1);
+                screendisplay.print("   Try Again");
+                delay(800);
+                screendisplay.clear();
+                changepassword();
+        }
+       }
+      }
+}
+
+//enter password to gain entry
+void enterPass() {
+  int x = 10;                         //variable to control cursor in this scope
+  temp_Pass = "";
+  activated = true;
+
+  //display prompt to enter password
+  screendisplay.clear();
+  screendisplay.setCursor(0, 0);
+  screendisplay.print(" *** ALARM *** ");
+  screendisplay.setCursor(0, 1);
+  screendisplay.print("Password>");
+
+  //while alarm is activated
+  while (activated) {
+        //get user key pressed
+        keypressed = myKeyboard.getKey();
+        //if a key is pressed
+        if (keypressed != NO_KEY) {
+          //if key pressed is any of this option, add it to string temp password
+           if (keypressed == '0' || keypressed == '1' || keypressed == '2' || keypressed == '3' ||
+               keypressed == '4' || keypressed == '5' || keypressed == '6' || keypressed == '7' ||
+               keypressed == '8' || keypressed == '9' || keypressed == 'A' || keypressed == 'B' || 
+               keypressed == 'C' || keypressed == 'D') {
+                   temp_Pass += keypressed;         //append temp_Pass with user input
+                   screendisplay.setCursor(x, 1);
+                   screendisplay.print("*");
+                   x++;
+      }
+    }
+
+    //if entered password is more than 5character or when user enters #  
+    //reset the entry and cursor then display prompt
+    if (x > 15 || keypressed == '#') {
+      temp_Pass = "";
+      x = 10;
+      screendisplay.clear();
+      screendisplay.setCursor(0, 0);
+      screendisplay.print(" *** ALARM *** ");
+      screendisplay.setCursor(0, 1);
+      screendisplay.print("Password>");
+    }
+
+    //if user enter *, confirm user enter password
+    if ( keypressed == '*') {
+      //verify that the password entered matches previously saved password
+      if ( temp_Pass == password  || temp_Pass == password_default) {
+
+        noTone(buzzerPin);
+        msg = 0;
+        
+        //display prompt
+        screendisplay.clear();
+        screendisplay.setCursor(0, 0);
+        screendisplay.print(" Access Granted");
+        screendisplay.setCursor(0, 1);
+        screendisplay.print("   Door Open"); 
+
+        //open door the close it shortly after and deactivate alarm
+        delay(3000);
+        closeDoor();
+     
+        activated = false;
+        alarmActivated = false;
+      }
+      //if entered password doesn't match saved password,display prompt and reset the entry  
+      else{
+        tone(buzzerPin, 1000); 
+        x = 10;
+        screendisplay.clear();
+        screendisplay.setCursor(0, 0); 
+        screendisplay.print("   INCORRECT!");
+        screendisplay.setCursor(0, 1);
+        screendisplay.print("   Try Again");
+        delay(2000);
+        screendisplay.clear();
+        enterPass();
+      }
+    }
+  }
+}
+// Custom function for the Ultrasonic sensor
+double getDist() {
+  //clear trigPin
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  // Sets the trigPin on HIGH state for 10 micro seconds
+  // enough to send the sound wave signal
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH);
+
+  // Calculating the distance
+  dist = duration * 0.034 / 2;
+
+  return dist;
+}
+
+
+void OpenDoor(){ 
+  digitalWrite(ledgreenPin, HIGH);   // turn the LED on (HIGH is the voltage level)
+  digitalWrite(ledredPin, LOW);   // turn the LED on (low is the voltage level)
+  
+  digitalWrite(WIRE2, HIGH); //Electrical Signals opens Door with high signal priority
+  delay(6000); //Wait Time 6Sec meanwhile
+  for(angle = 180; angle > 0; angle--) // Servo motor(Mechanical Arm) takes turn from 90 degree    
+  {                                    // to 10 degree angle which opens the door
+    servo.write(angle);          
+    delay(5);  // Wait Time < 1 Sec, Adjusted on the Mechanisim needs
+  }
+    for(angle = 0; angle < 180; angle++)  // Servo motor(Mechanical Arm) takes turn from 10 degree
+  {                                     
+    servo.write(angle);              
+    delay(5);  // Wait Time < 1 Sec, Adjusted on the Mechanisim needs
+  }
+  digitalWrite(WIRE2, LOW);
+  delay(7000);
+}
+
+
+void closeDoor(){
+  digitalWrite(ledgreenPin, LOW);    // turn the LED off by making the voltage LOW
+  digitalWrite(ledredPin, HIGH);   // turn the LED on (HIGH is the voltage level)
+}
